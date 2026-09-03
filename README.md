@@ -17,6 +17,62 @@ state and stays here until it stops being true.
   `host-backend` feature (winit).
 - **Licence:** AGPL-3.0-or-later. Slint is used under its GPL-3.0-only arm.
 
+## Download
+
+**[UNSIGNED.]** Nothing below is signed. PR-008 asks for *downloadable*, not
+for *trusted*: the E-OS signing chain (hybrid ed25519 + ML-DSA-65, described in
+the meta-repo) covers packages installed **on** E-OS, and these host archives
+sit outside it. The `.sha256` shipped beside each archive proves the file did
+not rot in transit — not who built it.
+
+`packaging/release.sh <target-triple> [<output-dir>]` builds one target and then
+looks at the FILE before it will call the result a package: `file -b` must match
+the format the triple implies, and the binary must clear a 1 MiB floor. It exits
+1 when either refuses and 2 when it could not run at all. `--selftest` feeds
+those two checks fabricated inputs — a text file, 2 MiB of zeroes, a 512 KB
+stub, a missing path, an unknown triple — and asserts every one is refused
+(7 checks, exit 0, measured here).
+
+Measured 2026-09-03 on macOS 26.6.1, Apple Silicon, rustc 1.98.0-nightly,
+slint 1.17.1, zig 0.16.0, `cargo zigbuild`:
+
+| target | binary | `file -b` says | archive |
+|---|---|---|---|
+| `x86_64-pc-windows-gnu` | 22 818 304 B | `PE32+ executable (console) x86-64, for MS Windows` | `eos-store-0.1.0-x86_64-pc-windows-gnu.zip`, 10 433 613 B |
+| `x86_64-unknown-linux-gnu` | 17 001 800 B | `ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, interpreter /lib64/ld-linux-x86-64.so.2, for GNU/Linux 2.0.0, stripped` | **not produced — see below** |
+
+Both binaries were checked to be *this* product rather than a neighbour's:
+`strings` finds `EOS-STORE-SELFTEST-OK` and `EOS-STORE-BACKEND-OK` in each. That
+check earned its place — the sibling product `eos-sheets`, generated from the
+same skeleton, builds to **byte-identical sizes** (22 818 304 and 17 001 800),
+so a size alone could not have told the two apart. Their SHA-256 sums differ.
+
+Two dependency stanzas in `Cargo.toml` exist solely to make these two targets
+compile, and each was confirmed by removing it again and watching the build fail
+(the errors are quoted next to them): the implicit `muda` feature for Windows,
+and `fontconfig-dlopen` for Linux.
+
+**What is NOT proven.** The Linux *archive* has never been produced on this
+host. `packaging/release.sh` sends every non-Windows triple through plain
+`cargo build --target`, so rustc hands GNU linker flags to Apple's `ld` and the
+link dies after 20m52s of successful compilation:
+
+```
+ld: unknown options: --as-needed -Bstatic -Bdynamic --eh-frame-hdr -z --gc-sections -z -z --strip-debug
+clang: error: linker command failed with exit code 1 (use -v to see invocation)
+error: could not compile `eos-store` (bin "eos-store") due to 1 previous error
+```
+
+The same tree linked by zig succeeds in 16m52s, and that is where the ELF above
+came from. The missing piece is one routing line in the shared packager (send
+`*linux-gnu` through `cargo zigbuild`, as the Windows arm already does) or a
+Linux runner — not anything in this repository. The `package-linux` CI job is
+left in place and red rather than quietly deleted.
+
+Neither target has ever been **run**: no Windows and no Linux machine was
+available. `file` says what the artefacts are; nobody has yet watched the window
+open on either.
+
 ## Building
 
 ### On a host (development)
@@ -36,9 +92,14 @@ plain GUI run refuses with the same code. That refusal is the negative test of
 the backend gate; it is expected to be red, and CI asserts that it is.
 
 The host backend build was measured on macOS (Apple Silicon, rustc 1.98.0,
-slint 1.17.1) and compiles. **[UNVERIFIED] on Linux and Windows** — no such host
-was available; the Linux target section additionally requests the `x11` and
-`wayland` features and nobody has compiled it yet.
+slint 1.17.1) and compiles.
+
+**Correction, 2026-09-03.** This paragraph used to end "**[UNVERIFIED]** on
+Linux and Windows — nobody has compiled it yet". Both now cross-compile from
+this same macOS host, and the byte counts are in [Download](#download): the
+Linux target does request `x11` and `wayland` and does build with them. What is
+still unverified is *running* either one — compiling is not launching, and no
+Windows or Linux machine has opened the window.
 
 ### For E-OS (the real target)
 
@@ -101,7 +162,7 @@ src/model.rs     the headless half: catalogue, search, status line, selftest
 ui/app.slint     the window (E-OS Crimson palette, identical to eos-notes)
 build.rs         compiles the .slint file
 assets/          Orbital launcher entry + 48×48 icon (placeholder — needs a designer)
-packaging/       the cookbook recipe, to be copied into the meta-repo
+packaging/       release.sh (per-OS archives) + the cookbook recipe for the meta-repo
 deny.toml        cargo-deny: licences, sources, bans, advisories (feature graph)
 osv-scanner.toml osv-scanner: advisory exceptions, each with an `ignoreUntil`
 ```

@@ -1,1 +1,4 @@
 /target
+# packaging/release.sh writes the per-OS archives here. Built artefacts are
+# published by CI, never committed (CLAUDE.md §5.7).
+/dist

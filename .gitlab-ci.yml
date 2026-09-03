@@ -1,13 +1,16 @@
 # eos-store CI.
 #
-# Two tiers, and the split is not cosmetic. gitlab.com shared minutes for this
+# Three tiers, and the split is not cosmetic. gitlab.com shared minutes for this
 # group run out with interruptions (CLAUDE.md §9), so the tier that must always
 # be able to run is the one on our own macOS runner, tag `eos-heavy`.
 #
-#   light  — secret scan, fmt, clippy, test, coverage, cargo-deny,
-#            osv-scanner. Shared runners, default features (no windowing
-#            backend, so no display libraries are needed).
-#   heavy  — the host GUI build and its runtime proof, on `eos-heavy`.
+#   light   — secret scan, fmt, clippy, test, coverage, cargo-deny,
+#             osv-scanner. Shared runners, default features (no windowing
+#             backend, so no display libraries are needed).
+#   heavy   — the host GUI build and its runtime proof, on `eos-heavy`.
+#   package — the per-OS downloads (PR-008), also on `eos-heavy`: it is the
+#             only runner carrying zig and cargo-zigbuild, and the only host
+#             where anyone has run `file` over what came out.
 #
 # No job carries `allow_failure` — a gate that cannot go red is decoration
 # (CLAUDE.md §13).
@@ -29,6 +32,7 @@
 stages:
   - light
   - heavy
+  - package
 
 variables:
   CARGO_TERM_COLOR: "always"
@@ -158,3 +162,111 @@ host-gui:
         echo "FAIL: --check-backend succeeded without host-backend"
         exit 1
       fi
+
+# PR-008: this product, downloadable on its own, one archive per operating
+# system. Both jobs sit on `eos-heavy`, and that is not a preference. The
+# Windows target is cross-compiled with `cargo zigbuild`, which needs zig and
+# cargo-zigbuild on the machine; the shared runners have neither, and no quota
+# to install them (CLAUDE.md §9). A job here without `tags: [eos-heavy]` would
+# not be a slower gate — it would be a gate that never runs.
+#
+# Neither job builds and then trusts cargo. `packaging/release.sh` looks at the
+# FILE: `file -b` must say PE32+ x86-64 for the Windows target and ELF x86-64
+# for the Linux one, and the binary must clear a 1 MiB floor. It exits 1 when
+# either refuses. That is what lets these jobs go red for the reason they
+# exist, rather than only when the compiler had already shouted (CLAUDE.md
+# §5.3).
+#
+# `--selftest` runs first in both, and it is not ceremony. It feeds those two
+# checks fabricated inputs — a text file, 2 MiB of zeroes, a 512 KB stub, an
+# absent path, an unknown triple — and asserts every one is REFUSED. Should the
+# checks ever decay into "the file exists", a packaging job would stay green
+# while publishing a stub; this step fails first. The script's own header
+# records why it is built that way: an earlier version's negative test passed
+# green twice because cargo relinked the binary the test had corrupted, and a
+# mutation the build repairs looks exactly like a gate that works (CLAUDE.md
+# §5.9 level 2).
+#
+# The archive and its .sha256 are published as artifacts. They are NOT signed.
+# PR-008 asks for downloadable, not for trusted; the signing chain belongs to
+# the meta-repo, and claiming it here would claim a guarantee nobody built.
+.package:
+  extends: .rules-light
+  stage: package
+  tags:
+    - eos-heavy
+  # `needs: []` DETACHES THIS FROM STAGE ORDERING, and it is the difference between a
+  # gate and a decoration. Measured on this branch before the amendment: both package
+  # jobs came back **skipped** — not failed, not passed. The light-tier jobs above run on
+  # shared runners that are out of quota, they die in ~0 s, and GitLab then skips every
+  # later stage. The meta-repo hit the identical thing with its `pages` job. A skipped job
+  # reads exactly like a job that had nothing to complain about.
+  needs: []
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+  before_script:
+    # WHY A SYMLINK AND NOT CARGO_TARGET_DIR. `release.sh` addresses the binary as
+    # `target/<triple>/release/…`, so pointing cargo elsewhere would leave the script
+    # looking where the file is not. WHY ANYWHERE ELSE AT ALL: this runner's internal
+    # disk was measured at 96-99 %% full twice on 2026-09-03 and a default TMPDIR
+    # resolves there (CLAUDE.md P-16), while /Volumes/EOS-Podman has ~190 GiB.
+    # WHY THE PATH LINE: rustup here is Homebrew's, so cargo is NOT in ~/.cargo/bin.
+    # The meta-repo's `local-gates` job learned that as `cargo: command not found`.
+    - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
+    - command -v cargo zig cargo-zigbuild python3 file
+    - mkdir -p "$EOS_XBUILD" "$TMPDIR"
+    - rm -rf target dist && ln -s "$EOS_XBUILD" target
+    # The packager's checks are checked first: if they stop being able to refuse
+    # anything, nothing should be packaged at all (CLAUDE.md §5.4).
+    - bash packaging/release.sh --selftest
+  artifacts:
+    name: "$CI_PROJECT_NAME-$CI_COMMIT_REF_SLUG-$CI_JOB_NAME"
+    paths:
+      - dist/
+    expire_in: 1 week
+
+package-windows:
+  extends: .package
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+    EOS_XBUILD: "/Volumes/EOS-Podman/xbuild/eos-store-ci-windows"
+  script:
+    - bash packaging/release.sh x86_64-pc-windows-gnu dist
+
+# WAS MEASURED RED, AND IS NOT RED ANY MORE — both halves kept, because the first half is
+# what earned the second.
+#
+# The Cargo.toml half of the Linux target always worked: every dependency compiles for
+# x86_64-unknown-linux-gnu, `yeslogic-fontconfig-sys v6.0.1` included, because
+# `fontconfig-dlopen` removed its pkg-config-for-the-target requirement. Only the LINK
+# failed, and it failed after twenty minutes of successful compilation:
+#
+#   error: linking with `cc` failed: exit status: 1
+#     = note: ld: unknown options: --as-needed -Bstatic -Bdynamic
+#             --eh-frame-hdr -z --gc-sections -z -z --strip-debug
+#
+# — Apple's `ld` reading GNU `ld` options, because `packaging/release.sh` routed only
+# `*windows-gnu` through `cargo zigbuild` and let every other triple fall to plain
+# `cargo build`. FOUR product repositories hit that independently on 2026-09-03 and each
+# named the same missing routing line.
+#
+# FIXED IN THE TEMPLATE, not here: `release.sh` now decides by triple (`needs_zig` covers
+# `*windows-gnu`, `*linux-gnu`, `*linux-musl`) and `--selftest` covers that decision, so a
+# rule this cheap to check is no longer checked by waiting for a build. The script's old
+# header claimed a zig cross to Linux *fails* in fontconfig — true once, false from the
+# moment `fontconfig-dlopen` landed: the comment had outlived its measurement, which is
+# how a correct note becomes a wrong one.
+#
+# Measured through the packager after the fix, on eos-sheets:
+#   release: dist/eos-sheets-0.1.0-x86_64-unknown-linux-gnu.tar.gz  7666611 bytes
+#            (ELF 64-bit LSB pie executable, x86-64 ... for GNU/Linux 2.0.0, stripped)
+#   Finished `release` profile [optimized] target(s) in 3m 31s
+#
+# No `allow_failure`: if this goes red again it is a defect, not a known limitation.
+package-linux:
+  extends: .package
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+    EOS_XBUILD: "/Volumes/EOS-Podman/xbuild/eos-store-ci-linux"
+  script:
+    - bash packaging/release.sh x86_64-unknown-linux-gnu dist
