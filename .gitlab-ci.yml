@@ -195,6 +195,30 @@ host-gui:
   stage: package
   tags:
     - eos-heavy
+  # `needs: []` DETACHES THIS FROM STAGE ORDERING, and it is the difference between a
+  # gate and a decoration. Measured on this branch before the amendment: both package
+  # jobs came back **skipped** — not failed, not passed. The light-tier jobs above run on
+  # shared runners that are out of quota, they die in ~0 s, and GitLab then skips every
+  # later stage. The meta-repo hit the identical thing with its `pages` job. A skipped job
+  # reads exactly like a job that had nothing to complain about.
+  needs: []
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+  before_script:
+    # WHY A SYMLINK AND NOT CARGO_TARGET_DIR. `release.sh` addresses the binary as
+    # `target/<triple>/release/…`, so pointing cargo elsewhere would leave the script
+    # looking where the file is not. WHY ANYWHERE ELSE AT ALL: this runner's internal
+    # disk was measured at 96-99 %% full twice on 2026-09-03 and a default TMPDIR
+    # resolves there (CLAUDE.md P-16), while /Volumes/EOS-Podman has ~190 GiB.
+    # WHY THE PATH LINE: rustup here is Homebrew's, so cargo is NOT in ~/.cargo/bin.
+    # The meta-repo's `local-gates` job learned that as `cargo: command not found`.
+    - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
+    - command -v cargo zig cargo-zigbuild python3 file
+    - mkdir -p "$EOS_XBUILD" "$TMPDIR"
+    - rm -rf target dist && ln -s "$EOS_XBUILD" target
+    # The packager's checks are checked first: if they stop being able to refuse
+    # anything, nothing should be packaged at all (CLAUDE.md §5.4).
+    - bash packaging/release.sh --selftest
   artifacts:
     name: "$CI_PROJECT_NAME-$CI_COMMIT_REF_SLUG-$CI_JOB_NAME"
     paths:
@@ -203,31 +227,46 @@ host-gui:
 
 package-windows:
   extends: .package
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+    EOS_XBUILD: "/Volumes/EOS-Podman/xbuild/eos-store-ci-windows"
   script:
-    - bash packaging/release.sh --selftest
     - bash packaging/release.sh x86_64-pc-windows-gnu dist
 
-# MEASURED RED, and left here saying so rather than quietly omitted. On this
-# macOS runner `packaging/release.sh x86_64-unknown-linux-gnu` fails, and not
-# in the compiler: the packager sends every non-Windows triple through plain
-# `cargo build --target`, so rustc hands GNU linker flags to Apple's ld —
+# WAS MEASURED RED, AND IS NOT RED ANY MORE — both halves kept, because the first half is
+# what earned the second.
 #
-#   ld: unknown options: --as-needed -Bstatic -Bdynamic --eh-frame-hdr -z
-#       --gc-sections -z -z --strip-debug
-#   clang: error: linker command failed with exit code 1
-#   error: could not compile `eos-store` (bin "eos-store")
+# The Cargo.toml half of the Linux target always worked: every dependency compiles for
+# x86_64-unknown-linux-gnu, `yeslogic-fontconfig-sys v6.0.1` included, because
+# `fontconfig-dlopen` removed its pkg-config-for-the-target requirement. Only the LINK
+# failed, and it failed after twenty minutes of successful compilation:
 #
-# after 20m52s of successful compilation. The Linux BINARY is fine — the same
-# tree, linked by zig instead, produced a 17 001 800-byte
-# `ELF 64-bit LSB pie executable, x86-64 ... for GNU/Linux 2.0.0, stripped`
-# in 16m52s. So what is missing is one routing line in the packager (send
-# `*linux-gnu` through `cargo zigbuild` as the Windows arm already does), or a
-# Linux runner. `packaging/release.sh` is a template shared across the E-OS
-# product repositories; patching it in this one repository would fork it, so
-# the fix belongs in the template and this job stays honest about being red
-# until then. A job deleted because it fails is a fact deleted (CLAUDE.md §13).
+#   error: linking with `cc` failed: exit status: 1
+#     = note: ld: unknown options: --as-needed -Bstatic -Bdynamic
+#             --eh-frame-hdr -z --gc-sections -z -z --strip-debug
+#
+# — Apple's `ld` reading GNU `ld` options, because `packaging/release.sh` routed only
+# `*windows-gnu` through `cargo zigbuild` and let every other triple fall to plain
+# `cargo build`. FOUR product repositories hit that independently on 2026-09-03 and each
+# named the same missing routing line.
+#
+# FIXED IN THE TEMPLATE, not here: `release.sh` now decides by triple (`needs_zig` covers
+# `*windows-gnu`, `*linux-gnu`, `*linux-musl`) and `--selftest` covers that decision, so a
+# rule this cheap to check is no longer checked by waiting for a build. The script's old
+# header claimed a zig cross to Linux *fails* in fontconfig — true once, false from the
+# moment `fontconfig-dlopen` landed: the comment had outlived its measurement, which is
+# how a correct note becomes a wrong one.
+#
+# Measured through the packager after the fix, on eos-sheets:
+#   release: dist/eos-sheets-0.1.0-x86_64-unknown-linux-gnu.tar.gz  7666611 bytes
+#            (ELF 64-bit LSB pie executable, x86-64 ... for GNU/Linux 2.0.0, stripped)
+#   Finished `release` profile [optimized] target(s) in 3m 31s
+#
+# No `allow_failure`: if this goes red again it is a defect, not a known limitation.
 package-linux:
   extends: .package
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+    EOS_XBUILD: "/Volumes/EOS-Podman/xbuild/eos-store-ci-linux"
   script:
-    - bash packaging/release.sh --selftest
     - bash packaging/release.sh x86_64-unknown-linux-gnu dist
