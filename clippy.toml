@@ -1,0 +1,5 @@
+# Shared clippy tuning for the E-OS ecosystem (one config, not 24).
+# Lint *levels* are enforced in CI (`cargo clippy -- -D warnings`, ETAP 4 / R-004);
+# this file only tunes specific lint thresholds so they behave the same everywhere.
+too-many-arguments-threshold = 10
+type-complexity-threshold = 300

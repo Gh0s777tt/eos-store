@@ -1,0 +1,53 @@
+[package]
+name = "eos-store"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Application store client for E-OS — browse, verify and install signed packages."
+repository = "https://gitlab.com/e-os/eos-store"
+build = "build.rs"
+
+[[bin]]
+name = "eos-store"
+path = "src/main.rs"
+
+[dependencies]
+# Slint drives the widgets; the Redox backend (software renderer over orbclient)
+# and the font bootstrap live in the shared eos-ui crate. Feature set copied
+# verbatim from eos-notes — `renderer-software` is the only renderer that works
+# under Orbital, and `compat-1-0` keeps the 1.x language semantics.
+slint = { version = "1.17", default-features = false, features = ["compat-1-0", "std", "renderer-software"] }
+eos-ui = { git = "https://gitlab.com/e-os/eos-ui.git", rev = "9fb3f3e4a3ecf1c152b03662db0723869206e5d6" }
+
+# Host window backend. Two facts decide the shape of this section:
+#   1. cargo refuses the same crate under two names in one package
+#      ("depends on crate `slint` v1.17.1 multiple times with different names"),
+#      so the host backend cannot be a renamed second `slint` entry;
+#   2. a feature that switched `slint/backend-winit` on would switch it on for
+#      *every* target, Redox included.
+# Depending on the backend crate itself, target-scoped and optional, gives both
+# properties: Redox never resolves this section, and the host build only pulls
+# winit when it is asked to.
+[target.'cfg(not(target_os = "redox"))'.dependencies]
+i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software"], optional = true }
+
+# Linux/BSD hosts additionally need the display-server features; macOS does not.
+# [UNVERIFIED]: measured on macOS only — no Linux host was available.
+[target.'cfg(all(unix, not(target_os = "redox"), not(target_os = "macos")))'.dependencies]
+i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software", "x11", "wayland"], optional = true }
+
+[features]
+# Fail-closed: the default build carries no windowing backend, so a Redox cross
+# build cannot pick one up by accident and a CI container needs no display libs.
+# `--features host-backend` is the explicit escape that opens a real window on
+# Linux/macOS/Windows.
+default = []
+host-backend = ["dep:i-slint-backend-winit"]
+
+[build-dependencies]
+slint-build = "1.17"
+
+[profile.release]
+# E-OS hardening baseline (matches the code forks): an unintended integer
+# overflow aborts instead of wrapping silently.
+overflow-checks = true

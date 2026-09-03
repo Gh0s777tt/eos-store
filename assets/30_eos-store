@@ -1,0 +1,6 @@
+name=E-OS Store
+binary=/usr/bin/eos-store
+icon=/ui/icons/apps/eos-store.png
+category=Office
+description=Application store client for E-OS — browse, verify and install signed packages.
+author=E-OS

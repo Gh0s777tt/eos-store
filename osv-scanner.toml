@@ -1,0 +1,102 @@
+# osv-scanner exceptions for eos-store.
+#
+# Modelled on the E-OS meta-repo osv-scanner.toml. An entry here is a claim that
+# a finding does not apply to THIS dependency graph, with the evidence for the
+# claim and a date on which the claim expires. `ignoreUntil` is what makes it a
+# debt register rather than a mute button: the finding comes back on its own and
+# a stale exception fails the build instead of hiding forever.
+#
+# cargo-deny's own ignore list (deny.toml) has no equivalent — cargo-deny 0.20.2
+# accepts only `id` and `reason` under [[advisories.ignore]]:
+#   cargo deny --config <deny.toml with expires="2026-12-31"> check advisories
+#     -> error[unexpected-keys]: found 1 unexpected keys, expected: ["id", "reason"]
+# so anything that needs an expiry date is carried here, not there.
+#
+# The bar for adding one: name the code path that would have to exist for the
+# finding to be reachable, and show that it does not. "Probably fine" is not a
+# reason.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2025-0141"
+ignoreUntil = 2026-12-01
+reason = """
+bincode 2.0.1 is unmaintained (the team ceased development permanently). It is an
+advisory of kind "unmaintained", not a vulnerability: no CVSS, no affected API.
+
+Not linked into anything this repository builds, checked rather than assumed:
+  - it enters Cargo.lock only through typed-index-collections 3.5.0, which is a
+    dependency of i-slint-compiler (a *build* dependency here, via slint-build).
+  - in typed-index-collections 3.5.0 the dependency is optional and off:
+      [dependencies.bincode] version = "2.0.1" optional = true
+      [features] bincode = ["dep:bincode"]   # not in `default`
+    and nothing in the graph turns that feature on.
+  - the measurement that shows it:
+      cargo tree -i bincode --target all  ->  "warning: nothing to print."
+    i.e. no target, no feature set, resolves to a package that depends on it.
+    cargo-deny, which walks the resolved feature graph rather than the lockfile,
+    does not report it at all ("advisories ok"); osv-scanner reads Cargo.lock and
+    therefore does.
+
+Cannot be fixed by updating: there is no fixed version, and the crate is not ours
+to drop — it leaves the lockfile when typed-index-collections drops the optional
+dependency or Slint drops typed-index-collections.
+
+Review by 2026-12-01: either the lockfile no longer carries bincode, or this
+exception has to be argued again.
+"""
+
+# The three below are the same advisories deny.toml already carries, repeated
+# here because osv-scanner reads its own config. They are duplicated on purpose:
+# two databases that see different things is the point of running both (the
+# meta-repo learned that as C-13 — Dependabot reported 0 while osv-scanner found
+# real advisories). What is NOT duplicated is the expiry: deny.toml cannot carry
+# one, so this file is where the debt actually comes back.
+#
+# All three are "unmaintained" advisories, none is a vulnerability, and all three
+# arrive through the same route — the Slint compiler, which is a *build*
+# dependency of every generated repository (slint-build), plus i-slint-common at
+# run time for SVG rendering. Measured with `cargo tree -i <crate> --target all`.
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2024-0436"
+ignoreUntil = 2026-12-01
+reason = """
+paste 1.0.15 unmaintained: the author archived the repository.
+
+Chain, measured: paste (proc-macro) <- pulp <- exr <- image <- i-slint-compiler
+<- slint-build [build-dependencies] <- this crate. A proc-macro dependency of an
+EXR image decoder used by the Slint compiler; nothing of it is linked into the
+product binary, and this repository decodes no EXR images.
+
+Cannot be fixed by updating: no fixed version exists and the crate is archived.
+It leaves the lockfile when pulp drops it. Review by 2026-12-01.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0206"
+ignoreUntil = 2026-12-01
+reason = """
+rustybuzz 0.20.1 unmaintained: the maintainer stepped back; harfrust is the
+successor.
+
+Chain, measured: rustybuzz <- usvg <- resvg <- i-slint-common <- slint. Text
+shaping inside Slint's SVG renderer. Migrating resvg to harfrust is Slint's
+call, not this repository's, and this repository ships no untrusted SVG: the
+only SVG input is its own assets/ directory.
+
+Cannot be fixed by updating: no fixed version. Review by 2026-12-01.
+"""
+
+[[IgnoredVulns]]
+id = "RUSTSEC-2026-0192"
+ignoreUntil = 2026-12-01
+reason = """
+ttf-parser 0.25.1 unmaintained.
+
+Chain, measured: ttf-parser <- fontdb <- usvg <- resvg <- i-slint-common <-
+slint. The same SVG chain as RUSTSEC-2026-0206, one crate deeper; the fonts it
+parses are the system fonts and the ones this repository ships, not attacker
+input.
+
+Cannot be fixed by updating: no fixed version published. Review by 2026-12-01.
+"""

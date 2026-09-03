@@ -1,0 +1,27 @@
+# Cookbook recipe for eos-store (E-OS Store).
+#
+# Install target in the E-OS meta-repo:
+#   recipes/gui/eos-store/recipe.toml
+# and add "eos-store" to the package list of the images that should ship it
+# (config/<arch>/eos.toml). Modelled on recipes/gui/eos-notes/recipe.toml.
+#
+# The `rev` below is a PLACEHOLDER. It must be replaced with the real first
+# commit of https://gitlab.com/e-os/eos-store before this recipe is committed:
+# `scripts/eos-repos.sh pins --strict` compares it with repos.toml and an
+# all-zero rev is not a commit that exists.
+
+[source]
+git = "https://gitlab.com/e-os/eos-store.git"
+branch = "main"
+rev = "0000000000000000000000000000000000000000"
+
+[build]
+template = "custom"
+script = """
+# Default features only: `host-backend` pulls winit, which does not exist on
+# Redox. The Orbital platform comes from eos-ui, which the crate always links.
+cookbook_cargo
+mkdir -pv "${COOKBOOK_STAGE}/usr/share/ui/apps" "${COOKBOOK_STAGE}/usr/share/ui/icons/apps"
+cp -v "${COOKBOOK_SOURCE}/assets/30_eos-store" "${COOKBOOK_STAGE}/usr/share/ui/apps/30_eos-store"
+cp -v "${COOKBOOK_SOURCE}/assets/eos-store.png" "${COOKBOOK_STAGE}/usr/share/ui/icons/apps/eos-store.png"
+"""

@@ -1,0 +1,82 @@
+// E-OS Store — E-OS Crimson palette.
+// deep black #0c0202 · panel #160404 · blood red #e50914 · text #f2e9e9 ·
+// muted #8a6f6f. Kept identical to eos-notes so the desktop reads as one system.
+
+export component MainWindow inherits Window {
+    title: "E-OS Store";
+    background: #0c0202;
+    preferred-width: 900px;
+    preferred-height: 600px;
+
+    // Set from Rust so the window cannot drift from the manifest.
+    in property <string> app-title: "E-OS Store";
+    in property <string> status: "";
+
+    VerticalLayout {
+        padding: 0px;
+
+        // ── Header ───────────────────────────────────────────────
+        Rectangle {
+            height: 56px;
+            background: #160404;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                spacing: 8px;
+                Text {
+                    text: root.app-title;
+                    color: #f2e9e9;
+                    font-size: 20px;
+                    vertical-alignment: center;
+                }
+                Rectangle { }
+                Text {
+                    text: "E-OS Crimson";
+                    color: #e50914;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+
+        // ── Content ──────────────────────────────────────────────
+        Rectangle {
+            background: #0c0202;
+            VerticalLayout {
+                padding: 24px;
+                spacing: 12px;
+                alignment: center;
+                Text {
+                    text: "Application store client for E-OS — browse, verify and install signed packages.";
+                    color: #f2e9e9;
+                    font-size: 15px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                Text {
+                    text: "This window is the skeleton — no product feature is implemented yet.";
+                    color: #8a6f6f;
+                    font-size: 12px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        // ── Status line ──────────────────────────────────────────
+        Rectangle {
+            height: 28px;
+            background: #160404;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                Text {
+                    text: root.status;
+                    color: #8a6f6f;
+                    font-size: 11px;
+                    vertical-alignment: center;
+                }
+            }
+        }
+    }
+}

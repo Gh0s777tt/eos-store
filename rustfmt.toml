@@ -1,0 +1,4 @@
+# Shared rustfmt config for the E-OS ecosystem (one config, not 24).
+# Stable-only options so `cargo fmt` works with the pinned toolchain's rustfmt.
+edition = "2021"
+max_width = 100

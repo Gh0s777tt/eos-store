@@ -1,0 +1,160 @@
+# eos-store CI.
+#
+# Two tiers, and the split is not cosmetic. gitlab.com shared minutes for this
+# group run out with interruptions (CLAUDE.md §9), so the tier that must always
+# be able to run is the one on our own macOS runner, tag `eos-heavy`.
+#
+#   light  — secret scan, fmt, clippy, test, coverage, cargo-deny,
+#            osv-scanner. Shared runners, default features (no windowing
+#            backend, so no display libraries are needed).
+#   heavy  — the host GUI build and its runtime proof, on `eos-heavy`.
+#
+# No job carries `allow_failure` — a gate that cannot go red is decoration
+# (CLAUDE.md §13).
+#
+# Two supply-chain databases, not one, and they are not redundant: cargo-deny
+# walks the RESOLVED FEATURE GRAPH, osv-scanner reads Cargo.lock. Measured on
+# this tree — `cargo deny check advisories` says "advisories ok" while
+# `osv-scanner scan source --lockfile Cargo.lock` reports RUSTSEC-2025-0141
+# (bincode), which sits in the lockfile behind an optional feature nobody
+# enables. The meta-repo learned the same lesson as C-13. The second reason for
+# both is expiry: cargo-deny 0.20.2 accepts only `id` and `reason` under
+# [[advisories.ignore]], so only osv-scanner.toml's `ignoreUntil` can make an
+# exception come back on its own.
+#
+# Every line here is kept under 80 columns so that plain `yamllint` (no
+# configuration file, which is what a reviewer runs) exits 0. Measured: with
+# the earlier long lines it exited 1 with three `line-length` errors.
+---
+stages:
+  - light
+  - heavy
+
+variables:
+  CARGO_TERM_COLOR: "always"
+  # Keeps the git dependency (eos-ui) fetch reproducible in a fresh container.
+  CARGO_NET_RETRY: "3"
+
+default:
+  interruptible: true
+
+# One copy of the trigger rules. Every job extends this, directly or via
+# `.light`; a second copy of a rule is a copy that goes stale (CLAUDE.md §13.1).
+.rules-light:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+
+.light:
+  extends: .rules-light
+  stage: light
+  image: "rust:slim"
+  before_script:
+    - apt-get update
+    - apt-get install -y --no-install-recommends git ca-certificates
+    - rustc --version && cargo --version
+
+# First job of the pipeline, as in the meta-repo (CLAUDE.md §13): a leaked
+# credential is the one finding that is already too late by the time the tests
+# run. No `--config`: the default rule set is the stricter one, and this tree
+# has nothing that trips it (measured: "no leaks found").
+secret-scan:
+  stage: light
+  extends: .rules-light
+  image:
+    name: "zricethezav/gitleaks:latest"
+    entrypoint: [""]
+  variables:
+    # Full history. GitLab's default shallow clone would hide a secret that was
+    # committed and then removed in a later commit, which is the usual case.
+    GIT_DEPTH: "0"
+  script:
+    - gitleaks detect --source . --no-banner --redact -v
+
+fmt:
+  extends: .light
+  script:
+    - rustup component add rustfmt
+    - cargo fmt -- --check
+
+clippy:
+  extends: .light
+  script:
+    - rustup component add clippy
+    # --all-targets covers the tests too; -D warnings lets the gate fail.
+    - cargo clippy --locked --all-targets -- -D warnings
+
+test:
+  extends: .light
+  script:
+    - cargo test --locked
+    # The marker the boot probe greps for must also be produced on the host.
+    # Not `cargo run | grep`: a pipe returns grep's status, so a crash in
+    # cargo run would be judged by grep (CLAUDE.md P-3). Capture, then grep.
+    - cargo run --locked -- --selftest > selftest.log
+    - grep -q 'EOS-STORE-SELFTEST-OK' selftest.log
+
+# CLAUDE.md §5.10 applies to E-OS-owned code, and a type-A product repository
+# is that. The floor is a REGRESSION catch, not a certificate: 55 is the line
+# coverage measured on a freshly generated tree (55.35% — model.rs 88.15%,
+# main.rs 0.00%, because main.rs is the GUI entry point and is exercised by
+# --selftest in the `test` job rather than by a unit test). Raising it is an
+# ordinary commit; lowering it needs the owner's agreement and a reason in the
+# commit body. Proven able to fail: at --fail-under-lines 60 the same tree
+# exits 1. Measured caveat worth knowing before you debug a red pipeline —
+# cargo-llvm-cov 0.6 prints NO message for this; the only signal is the exit
+# code and the TOTAL row of the table it printed anyway.
+coverage:
+  extends: .light
+  script:
+    - rustup component add llvm-tools-preview
+    - cargo install --locked cargo-llvm-cov
+    - cargo llvm-cov --locked --fail-under-lines 55
+
+deny:
+  extends: .light
+  script:
+    - cargo install --locked cargo-deny
+    - cargo deny check
+
+# The lockfile half of the supply chain; see the header for why both run.
+# `go install <pkg>@<version>` is version-pinned and its module checksums are
+# verified against sum.golang.org, so no hand-maintained binary hash is needed.
+osv-scanner:
+  stage: light
+  extends: .rules-light
+  image: "golang:1-alpine"
+  variables:
+    OSV_SCANNER_VERSION: "v2.2.3"
+  script:
+    - apk add --no-cache git
+    - >-
+      go install
+      github.com/google/osv-scanner/v2/cmd/osv-scanner@$OSV_SCANNER_VERSION
+    # Reads ./osv-scanner.toml. Every entry there carries an `ignoreUntil`, so
+    # the exception expires and the finding returns instead of hiding.
+    - osv-scanner scan source --lockfile Cargo.lock
+
+# Runs on the operator's Mac (tag `eos-heavy`): the only runner that is not
+# subject to the shared-minutes quota, and the only host where the winit
+# backend build has actually been measured.
+host-gui:
+  stage: heavy
+  extends: .rules-light
+  tags:
+    - eos-heavy
+  script:
+    - cargo build --locked --features host-backend
+    # Proves the backend is live, not merely linked: the window is constructed
+    # and dropped without entering the event loop.
+    - >-
+      cargo run --locked --features host-backend -- --check-backend
+      > backend.log
+    - grep -q 'EOS-STORE-BACKEND-OK' backend.log
+    # Negative side of the same gate: without the feature the binary must
+    # refuse with exit code 2 (could not run), not pretend to succeed.
+    - |
+      if cargo run --locked -- --check-backend; then
+        echo "FAIL: --check-backend succeeded without host-backend"
+        exit 1
+      fi
