@@ -1,13 +1,16 @@
 # eos-store CI.
 #
-# Two tiers, and the split is not cosmetic. gitlab.com shared minutes for this
+# Three tiers, and the split is not cosmetic. gitlab.com shared minutes for this
 # group run out with interruptions (CLAUDE.md §9), so the tier that must always
 # be able to run is the one on our own macOS runner, tag `eos-heavy`.
 #
-#   light  — secret scan, fmt, clippy, test, coverage, cargo-deny,
-#            osv-scanner. Shared runners, default features (no windowing
-#            backend, so no display libraries are needed).
-#   heavy  — the host GUI build and its runtime proof, on `eos-heavy`.
+#   light   — secret scan, fmt, clippy, test, coverage, cargo-deny,
+#             osv-scanner. Shared runners, default features (no windowing
+#             backend, so no display libraries are needed).
+#   heavy   — the host GUI build and its runtime proof, on `eos-heavy`.
+#   package — the per-OS downloads (PR-008), also on `eos-heavy`: it is the
+#             only runner carrying zig and cargo-zigbuild, and the only host
+#             where anyone has run `file` over what came out.
 #
 # No job carries `allow_failure` — a gate that cannot go red is decoration
 # (CLAUDE.md §13).
@@ -29,6 +32,7 @@
 stages:
   - light
   - heavy
+  - package
 
 variables:
   CARGO_TERM_COLOR: "always"
@@ -158,3 +162,72 @@ host-gui:
         echo "FAIL: --check-backend succeeded without host-backend"
         exit 1
       fi
+
+# PR-008: this product, downloadable on its own, one archive per operating
+# system. Both jobs sit on `eos-heavy`, and that is not a preference. The
+# Windows target is cross-compiled with `cargo zigbuild`, which needs zig and
+# cargo-zigbuild on the machine; the shared runners have neither, and no quota
+# to install them (CLAUDE.md §9). A job here without `tags: [eos-heavy]` would
+# not be a slower gate — it would be a gate that never runs.
+#
+# Neither job builds and then trusts cargo. `packaging/release.sh` looks at the
+# FILE: `file -b` must say PE32+ x86-64 for the Windows target and ELF x86-64
+# for the Linux one, and the binary must clear a 1 MiB floor. It exits 1 when
+# either refuses. That is what lets these jobs go red for the reason they
+# exist, rather than only when the compiler had already shouted (CLAUDE.md
+# §5.3).
+#
+# `--selftest` runs first in both, and it is not ceremony. It feeds those two
+# checks fabricated inputs — a text file, 2 MiB of zeroes, a 512 KB stub, an
+# absent path, an unknown triple — and asserts every one is REFUSED. Should the
+# checks ever decay into "the file exists", a packaging job would stay green
+# while publishing a stub; this step fails first. The script's own header
+# records why it is built that way: an earlier version's negative test passed
+# green twice because cargo relinked the binary the test had corrupted, and a
+# mutation the build repairs looks exactly like a gate that works (CLAUDE.md
+# §5.9 level 2).
+#
+# The archive and its .sha256 are published as artifacts. They are NOT signed.
+# PR-008 asks for downloadable, not for trusted; the signing chain belongs to
+# the meta-repo, and claiming it here would claim a guarantee nobody built.
+.package:
+  extends: .rules-light
+  stage: package
+  tags:
+    - eos-heavy
+  artifacts:
+    name: "$CI_PROJECT_NAME-$CI_COMMIT_REF_SLUG-$CI_JOB_NAME"
+    paths:
+      - dist/
+    expire_in: 1 week
+
+package-windows:
+  extends: .package
+  script:
+    - bash packaging/release.sh --selftest
+    - bash packaging/release.sh x86_64-pc-windows-gnu dist
+
+# MEASURED RED, and left here saying so rather than quietly omitted. On this
+# macOS runner `packaging/release.sh x86_64-unknown-linux-gnu` fails, and not
+# in the compiler: the packager sends every non-Windows triple through plain
+# `cargo build --target`, so rustc hands GNU linker flags to Apple's ld —
+#
+#   ld: unknown options: --as-needed -Bstatic -Bdynamic --eh-frame-hdr -z
+#       --gc-sections -z -z --strip-debug
+#   clang: error: linker command failed with exit code 1
+#   error: could not compile `eos-store` (bin "eos-store")
+#
+# after 20m52s of successful compilation. The Linux BINARY is fine — the same
+# tree, linked by zig instead, produced a 17 001 800-byte
+# `ELF 64-bit LSB pie executable, x86-64 ... for GNU/Linux 2.0.0, stripped`
+# in 16m52s. So what is missing is one routing line in the packager (send
+# `*linux-gnu` through `cargo zigbuild` as the Windows arm already does), or a
+# Linux runner. `packaging/release.sh` is a template shared across the E-OS
+# product repositories; patching it in this one repository would fork it, so
+# the fix belongs in the template and this job stays honest about being red
+# until then. A job deleted because it fails is a fact deleted (CLAUDE.md §13).
+package-linux:
+  extends: .package
+  script:
+    - bash packaging/release.sh --selftest
+    - bash packaging/release.sh x86_64-unknown-linux-gnu dist

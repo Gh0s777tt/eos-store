@@ -31,10 +31,53 @@ eos-ui = { git = "https://gitlab.com/e-os/eos-ui.git", rev = "9fb3f3e4a3ecf1c152
 [target.'cfg(not(target_os = "redox"))'.dependencies]
 i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software"], optional = true }
 
+# Windows needs one MORE feature of the same crate, and the reason is a defect
+# in the backend crate, not a preference of ours. In i-slint-backend-winit
+# 1.17.1 the `WinitWindowOrNone::HasWindow` variant declares its `muda_adapter`
+# field under `#[cfg(muda)]` (its build.rs sets `muda = all(feature = "muda",
+# any(windows, macos))`), while the pattern match at winitwindowadapter.rs:913
+# is gated only `#[cfg(target_os = "windows")]`. `muda` is an IMPLICIT feature —
+# an optional dependency, absent from that crate's [features] table — so it is
+# off by default and the crate cannot compile for Windows at all without it.
+# Measured on this tree, with this stanza removed and nothing else changed:
+#
+#   error[E0026]: variant `WinitWindowOrNone::HasWindow` does not have a field
+#                 named `muda_adapter`
+#     --> .../i-slint-backend-winit-1.17.1/winitwindowadapter.rs:916:13
+#     = help: `WinitWindowOrNone::HasWindow` has a field named `frame_throttle`
+#
+# Target-scoped dependency tables are additive, so this entry adds `muda` on top
+# of the `renderer-software` above for the Windows target only. No other host
+# grows a tray-menu dependency because of it, and Redox still never resolves any
+# of these sections.
+[target.'cfg(target_os = "windows")'.dependencies]
+i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software", "muda"], optional = true }
+
 # Linux/BSD hosts additionally need the display-server features; macOS does not.
 # [UNVERIFIED]: measured on macOS only — no Linux host was available.
 [target.'cfg(all(unix, not(target_os = "redox"), not(target_os = "macos")))'.dependencies]
 i-slint-backend-winit = { version = "1.17", default-features = false, features = ["renderer-software", "x11", "wayland"], optional = true }
+
+# ...and cross-compiling to Linux needs one thing more, in a crate we do not
+# otherwise name. `i-slint-common`'s default path LINKS fontconfig, so its
+# `yeslogic-fontconfig-sys` build script asks pkg-config about the target and
+# pkg-config refuses. Measured on this tree, with this stanza removed:
+#
+#   panicked at .../yeslogic-fontconfig-sys-6.0.1/build.rs:8:48:
+#   called `Result::unwrap()` on an `Err` value: "pkg-config has not been
+#   configured to support cross-compilation. [...]"
+#
+# `fontconfig-dlopen` opens fontconfig at RUNTIME instead of at link time, so
+# the build needs no Linux sysroot. Naming the crate here — target-scoped,
+# optional, and pinned to the exact version the rest of the graph already
+# resolves to, so cargo cannot end up with a second copy — is what lets cargo's
+# feature unification apply the feature to Slint's own copy of it as well.
+# The `=1.17.1` pin is therefore load-bearing: with a `^` requirement a future
+# 1.17.2 would be a *different* package from the one Slint resolved, the
+# feature would land on the wrong copy, and the build would fail again with the
+# error above while this file still claimed to have fixed it.
+[target.'cfg(target_os = "linux")'.dependencies]
+i-slint-common = { version = "=1.17.1", default-features = false, features = ["fontconfig-dlopen"], optional = true }
 
 [features]
 # Fail-closed: the default build carries no windowing backend, so a Redox cross
@@ -42,7 +85,10 @@ i-slint-backend-winit = { version = "1.17", default-features = false, features =
 # `--features host-backend` is the explicit escape that opens a real window on
 # Linux/macOS/Windows.
 default = []
-host-backend = ["dep:i-slint-backend-winit"]
+# `dep:i-slint-common` is inert on every target but Linux — the dependency it
+# names exists only in the Linux table above — so this list stays a single
+# feature rather than three per-OS ones.
+host-backend = ["dep:i-slint-backend-winit", "dep:i-slint-common"]
 
 [build-dependencies]
 slint-build = "1.17"
