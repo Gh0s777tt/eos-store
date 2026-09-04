@@ -172,6 +172,19 @@ osv-scanner:
 # Runs on the operator's Mac (tag `eos-heavy`): the only runner that is not
 # subject to the shared-minutes quota, and the only host where the winit
 # backend build has actually been measured.
+.host-toolchain:
+  # THE ONE PLACE THAT KNOWS WHERE CARGO IS. rustup on this runner is Homebrew's, so cargo is NOT
+  # in ~/.cargo/bin, and the gitlab-runner shell executor does not read a login profile. Before this
+  # job existed the same two lines were pasted into `.package` and `checks-heavy`, each with a
+  # comment saying they had been learned the expensive way -- and `host-gui`, which got neither
+  # copy, failed with `cargo: command not found` (exit 127) on every pipeline it was ever part of.
+  # A rule kept in copies drifts, and the copy that is missing is the one that breaks (CLAUDE.md
+  # section 13.1). `command -v` is the check on the check: if cargo stops being on PATH, the job
+  # goes red HERE with a name, instead of somewhere further down with a confusing message.
+  before_script:
+    - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
+    - command -v cargo
+
 host-gui:
   stage: heavy
   extends: .rules-light
@@ -184,6 +197,8 @@ host-gui:
   # like it had CI. Removing this line loses the job silently rather
   # than failing it (meta-repo ROADMAP `RH-018`).
   needs: []
+  before_script:
+    - !reference [.host-toolchain, before_script]
   script:
     - cargo build --locked --features host-backend
     # Proves the backend is live, not merely linked: the window is constructed
@@ -249,7 +264,7 @@ host-gui:
     # resolves there (CLAUDE.md P-16), while /Volumes/EOS-Podman has ~190 GiB.
     # WHY THE PATH LINE: rustup here is Homebrew's, so cargo is NOT in ~/.cargo/bin.
     # The meta-repo's `local-gates` job learned that as `cargo: command not found`.
-    - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
+    - !reference [.host-toolchain, before_script]
     - command -v cargo zig cargo-zigbuild python3 file
     - mkdir -p "$EOS_XBUILD" "$TMPDIR"
     - rm -rf target dist && ln -s "$EOS_XBUILD" target
@@ -349,8 +364,7 @@ checks-heavy:
   before_script:
     # Homebrew's rustup keeps cargo OUTSIDE ~/.cargo/bin. The meta-repo's
     # `local-gates` job learned that the expensive way: "cargo: not found".
-    - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:$PATH"
-    - export PATH="/opt/homebrew/bin:$PATH"
+    - !reference [.host-toolchain, before_script]
     - command -v cargo python3
     - mkdir -p "$EOS_XBUILD" "$TMPDIR"
     # The internal disk has been measured at 92-99 % full; /Volumes/EOS-Podman
