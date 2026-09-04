@@ -184,8 +184,18 @@ osv-scanner:
   before_script:
     - export PATH="$HOME/.cargo/bin:/opt/homebrew/opt/rustup/bin:/opt/homebrew/bin:$PATH"
     - command -v cargo
+    # AND WHERE THE BUILD TREE GOES, for the same reason the PATH line is here. This runner's
+    # internal disk has been measured at 98-100 %% full; /Volumes/EOS-Podman has ~95 GiB. Both
+    # `checks-heavy` and the packaging jobs already redirected `target` there -- and `host-gui`,
+    # once again, did not. The first pipeline in which `host-gui` was able to run at all died on
+    # `rustc-LLVM ERROR: IO failure on output stream: No space left on device`. A symlink rather
+    # than CARGO_TARGET_DIR so every tool agrees where things are.
+    - if [ -n "${EOS_XBUILD:-}" ]; then mkdir -p "$EOS_XBUILD" "${TMPDIR:-/tmp}"; rm -rf target; ln -s "$EOS_XBUILD" target; fi
 
 host-gui:
+  variables:
+    TMPDIR: "/Volumes/EOS-Podman/tmp"
+    EOS_XBUILD: "/Volumes/EOS-Podman/xbuild/eos-store-ci-hostgui"
   stage: heavy
   extends: .rules-light
   tags:
